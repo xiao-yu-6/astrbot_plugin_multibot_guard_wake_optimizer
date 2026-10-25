@@ -1,0 +1,15 @@
+# Never publish local state, credentials, logs, or databases
+__pycache__/
+*.py[cod]
+*.log
+.env
+.env.*
+settings.json
+*_config.json
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.bak
+*.tmp
+data/

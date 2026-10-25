@@ -1,0 +1,8 @@
+{
+  "views": {
+    "settings": {
+      "title": "Group Chat Multi-Bot Optimization",
+      "description": "Linked bot/group selector, peer directory, regex wake, reply protection and semantic judgement"
+    }
+  }
+}

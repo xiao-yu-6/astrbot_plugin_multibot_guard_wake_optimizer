@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QQ 群机器人协作设置</title>
+<link rel="stylesheet" href="./style.css">
+<script type="module" src="./app.js"></script>
+</head>
+<body>
+<main class="app">
+  <header class="topbar">
+    <div><div class="eyebrow">AstrBot · Peer Bot Context Guard</div><h1>群聊多机器人聊天优化</h1><p>唯一配置入口：先维护实例和群号，其他设置通过下拉框选择。原生插件配置入口已移除。</p></div>
+    <div class="savebox"><span id="notice" role="status">连接中…</span><button id="reload" type="button" class="soft">重新读取</button><button id="save" type="button" class="primary">保存全部设置</button></div>
+  </header>
+  <div id="render"><div class="waiting">正在读取插件配置…</div></div>
+  <footer>所有设置保存于独立插件数据目录的 settings.json，旧版配置文件只读取、不覆盖。QQ 身份仅按真实 QQ 号识别；别名不用于拦截。请先在示例群A验证。</footer>
+</main>
+</body></html>
