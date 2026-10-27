@@ -1,8 +1,8 @@
 name: astrbot_plugin_peer_context_guard
 display_name: 群聊多机器人聊天优化
-short_desc: 按实例与群聊配置机器人通讯录、句中唤醒、防互聊和只读历史。
+short_desc: 双QQ独立唤醒、防互聊、可选群聊上下文及同人限时接话。
 desc: 适用于 AstrBot 4.29.1 的独立群机器人协作插件。全部配置请打开插件详情 → 机器人协作配置中心（settings）；不提供易误操作的原生插件配置入口。
-version: 0.6.3
+version: 0.7.0
 author: xiao-yu-6
 astrbot_version: ">=4.29.1,<5"
 support_platforms:
@@ -13,5 +13,5 @@ tags:
   - group
   - regex
   - peer-bot
-repo: https://github.com/xiao-yu-6/astrbot_plugin_peer_context_guard
+repo: https://github.com/xiao-yu-6/astrbot_plugin_multibot_chat_optimizer
 social_link: https://github.com/xiao-yu-6

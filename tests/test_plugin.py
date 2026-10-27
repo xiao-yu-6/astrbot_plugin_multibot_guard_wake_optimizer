@@ -35,6 +35,12 @@ def fake_astrbot():
     messages = mk("astrbot.core.agent.message")
     mk("astrbot.core.utils", True)
     paths = mk("astrbot.core.utils.astrbot_path")
+    mk("astrbot.core.star", True)
+    mk("astrbot.core.star.filter", True)
+    commands = mk("astrbot.core.star.filter.command")
+    groups = mk("astrbot.core.star.filter.command_group")
+    commands.CommandFilter = type("CommandFilter", (), {})
+    groups.CommandGroupFilter = type("CommandGroupFilter", (), {})
 
     class Log:
         def info(self, *a, **kw): pass
@@ -50,6 +56,8 @@ def fake_astrbot():
         def event_message_type(*args, **kwargs): return lambda f: f
         @staticmethod
         def on_llm_request(*args, **kwargs): return lambda f: f
+        @staticmethod
+        def after_message_sent(*args, **kwargs): return lambda f: f
     events.filter = Filter
     class ProviderRequest:
         def __init__(self): self.extra_user_content_parts = []
@@ -122,7 +130,10 @@ class EventStub(Event):
         self.message_str=msg;self._parts=[Plain(msg)]+[At(a) for a in ats]
         self.stopped=False;self.is_at_or_wake_command=False;self.is_wake=False
         self.unified_msg_origin=f'{instance}:GroupMessage:{group}'
+        self._extra = {}
+        self._result = None
         self.message_obj=types.SimpleNamespace(message_id=message_id,
+               message=self._parts,
                raw_message={"message": [{"type":"at","data":{"qq":qq}} for qq in ats]})
     def get_platform_name(self): return 'aiocqhttp'
     def get_platform_id(self): return self.instance
@@ -130,7 +141,10 @@ class EventStub(Event):
     def get_self_id(self): return self.self_id
     def get_sender_id(self): return self.sender
     def get_sender_name(self): return '真实昵称'
-    def get_messages(self): return self._parts
+    def get_messages(self): return self.message_obj.message
+    def get_extra(self, key, default=None): return self._extra.get(key, default)
+    def set_extra(self, key, value): self._extra[key]=value
+    def get_result(self): return self._result
     def stop_event(self): self.stopped=True
     def is_stopped(self): return self.stopped
 
@@ -147,6 +161,7 @@ class Context:
     def get_event_queue(self): return self.q
     async def get_using_provider_async(self, umo): self.requests.append(umo);return self.provider
     def get_provider_by_id(self, provider_id): return self.provider
+    def get_config(self, umo=None): return {"wake_prefix": ["/", "机器人A", "小A", "机器人B"]}
 
 
 class MainTest(unittest.IsolatedAsyncioTestCase):

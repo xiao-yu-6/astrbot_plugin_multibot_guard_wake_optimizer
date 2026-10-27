@@ -25,12 +25,13 @@ from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 from .core import PeerStore, format_directory, has_keyword, id_set, parse_session_rules, session_config, build_rules_from_setup, explicit_local_bot_ids
 from .settings import validate_all, get_current_sections, InvalidSettings
 from .config_storage import ManagedConfig
+from .wake_flow import WakeFlowMixin, WakeFlowState
 
 PLUGIN_NAME = "astrbot_plugin_peer_context_guard"
 GUARD_PRIORITY = maxsize - 3
 
 
-class PeerContextGuard(Star):
+class PeerContextGuard(WakeFlowMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context, config)
         # No _conf_schema.json: AstrBot does not expose its duplicate native editor.
@@ -40,6 +41,7 @@ class PeerContextGuard(Star):
         self.store: PeerStore | None = None
         self._queue_binding = None
         self._observed_self_ids: dict[str, str] = {}
+        self._wake_flow = WakeFlowState()
         # AstrBot 4.29.1 view support; fallback tests / older installs may omit it.
         if hasattr(context, "register_web_api"):
             context.register_web_api(f"/{PLUGIN_NAME}/config/get", self.web_get_config, ["GET"], "Read linked QQ configuration")
@@ -84,6 +86,7 @@ class PeerContextGuard(Star):
             self._observed_self_ids = {
                 pid: qq for pid, qq in self._observed_self_ids.items() if pid in current
             }
+            self._wake_flow.clear()
         except Exception as exc:
             logger.exception("[peer-context] failed saving config View")
             return error_response(f"无法保存设置：{type(exc).__name__}", status_code=500)
@@ -197,6 +200,7 @@ class PeerContextGuard(Star):
         logger.info("[peer-context] session directory and bot reply guard initialized")
 
     async def terminate(self):
+        self._wake_flow.clear()
         if self._queue_binding:
             queue, prev, had_override, state, wrapper = self._queue_binding
             state["active"] = False
@@ -297,6 +301,8 @@ class PeerContextGuard(Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=GUARD_PRIORITY)
     async def wake_by_regex(self, event: AstrMessageEvent):
+        if hasattr(event, "get_extra") and event.get_extra("_peer_flow_keyword_checked"):
+            return
         if not self._value("robot_setup", "enabled", True) or not self._value("robot_setup", "wake_enabled", True) or not self._eligible(event):
             return
         rule = self._rule(event)
@@ -331,6 +337,22 @@ class PeerContextGuard(Star):
         if self._value("guard_options", "verbose_log", False):
             logger.info("[peer-context] regex wake instance=%s group=%s",
                         event.get_platform_id(), event.get_group_id())
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=maxsize + 1)
+    async def prepare_wake_flow(self, event: AstrMessageEvent):
+        await self.prepare_wake_flow_impl(event)
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=-1000)
+    async def record_wake_context(self, event: AstrMessageEvent):
+        await self.record_wake_context_impl(event)
+
+    @filter.after_message_sent()
+    async def after_wake_message_sent(self, event: AstrMessageEvent):
+        await self.after_wake_message_sent_impl(event)
+
+    @filter.on_llm_request(priority=-30)
+    async def inject_wake_context(self, event: AstrMessageEvent, req: ProviderRequest):
+        await self.inject_wake_context_impl(event, req)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=maxsize - 2)
     async def secondary_bot_guard(self, event: AstrMessageEvent):

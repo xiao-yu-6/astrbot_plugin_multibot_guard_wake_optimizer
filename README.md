@@ -2,11 +2,49 @@
 
 适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 QQ 群多机器人协作插件：在同一个 AstrBot 中按 **机器人实例 + QQ 群**配置通讯录、句中正则唤醒及防互聊规则；让不同机器人能够参考彼此的公开历史发言，同时避免它们因对方的消息反复唤醒、循环对话。
 
-> **当前版本：0.6.3**　｜　**支持 AstrBot：`>=4.29.1,<5`**　｜　**平台：`aiocqhttp`（NapCat / OneBot v11）**　｜　**许可证：MIT**
+> **当前版本：0.7.0**　｜　**支持 AstrBot：`>=4.29.1,<5`**　｜　**平台：`aiocqhttp`（NapCat / OneBot v11）**　｜　**许可证：MIT**
 >
 > **首次安装后，插件内部总开关默认关闭。** 请先在测试群完成设置，再手动启用。
 >
 > **唯一配置入口：** AstrBot → 插件 → 已安装插件 → 本插件详情 → **机器人协作配置中心**（`settings`）。插件不提供 `_conf_schema.json` 原生配置编辑表单，避免多入口配置不一致。
+
+## v0.7.0：唤醒上下文和等待
+
+插件详情 → **机器人协作配置中心** → **机器人实例的默认唤醒规则** → 每个实例的 **@ / 关键词唤醒：上下文与接话**。
+
+| 选项 | 行为 |
+| --- | --- |
+| 启用此实例的自定义唤醒接话 | 默认关闭，升级保留原设置。每个 QQ 实例独立开启。 |
+| 附带最近群聊消息条数 | 0～50；0 不额外注入，默认 6 条。收集通过门禁的真人文字与本实例发出的文字回复。 |
+| 上下文字符上限 | 512～12000，默认 4000；超限优先保留较新的消息。 |
+| 空唤醒：保留原设置 | 不接管框架的空 @ / 只唤醒词处理，框架原生等待规则不受本插件秒数控制。 |
+| 空唤醒：立即接话 | 把单独 @ / 唤醒词作为本次输入，走正常 LLM 流程，保留人格、会话历史和记忆插件。 |
+| 空唤醒：等待同一人补充 | 本次不立即请求 LLM、不发送提示；等待原发言者下一条有效消息。 |
+| 回复后接下一条 | 默认关闭；显式 @ / 关键词唤醒回复发送后，额外开放一次同人接话，不连续续期。 |
+| 自定义等待秒数 | 1～300，默认 60；适用于自定义等待和回复后接下一条。 |
+
+两项可组合：例如 `立即接话 + 附带6条上下文`，或 `等待补充 + 45秒 + 附带3条上下文`。
+带实际内容的 @ / 关键词照常立即处理，额外背景按条数添加；不会等待收集一整段消息。
+
+### 隔离与边界
+
+- 新功能同样遵守**关键词唤醒群范围**；保留原生 @、命令与发送者门禁，不开启概率主动回复。
+- 等待键为**平台实例 ID + 群号 + 发送者 QQ**，同群其他人、其他群、另一 QQ 实例不能消费该窗口。只消费一条，不重入事件队列。
+- 等待期间指令正常处理并取消此人的等待；@ 其他机器人或仅命中另一个已登记实例关键词的消息，不会被接走。
+- 登记的机器人不会获得等待接话资格；防互聊和既有机器人历史功能保持原样。
+- 语义辅助判断仍然有效。开启时，关键词命中不等于一定放行，判断失败/拒绝不会被新功能绕过。
+- 额外上下文在正常 `on_llm_request` 中以临时、只读背景注入，不清空或截断 `req.contexts`，不写入插件历史 SQLite。
+- 条数仅控制**额外注入的近期片段**，不等于对整个请求中会话历史、LivingMemory、原生群聊 ICL 的总条数限制；多个来源可能有内容重合。
+- 缓存仅在内存，启用后开始积累，最多每会话200条/全局256会话，30分钟过期；保存设置、重载、关闭进程会清空缓存与等待。不会自动读取整份旧聊天数据库。
+- 暂不注入图片、语音及文件原文；有内容的图片补充消息仍交给原有模型/插件处理。
+- 请勿再叠加启用其他接管空 @ / 等待流程的插件。命令支持和其他插件的最终停止决定保持有效。
+
+实现参考：[astrbot_plugin_empty_mention_plus](https://github.com/3303339695/astrbot_plugin_empty_mention_plus) 的正常对话路径和同人等待思路；本插件采用独立的有限状态窗口，不复制其全局会话等待器实现。
+
+升级验证建议：先限制到一个测试群，设置3条上下文与20秒等待；普通聊天不应主动回应，空唤醒后其他人发言不应被接走，同一人补充仅回应一次。双 QQ 分别测试。切换到“立即接话”后，单独 @ 应走正常上下文请求。
+
+项目：[xiao-yu-6/astrbot_plugin_multibot_chat_optimizer](https://github.com/xiao-yu-6/astrbot_plugin_multibot_chat_optimizer)。原始 MIT 许可与贡献者版权保留。
+
 
 ## 功能特性
 
@@ -30,7 +68,7 @@
 
 ### 安装 ZIP
 
-仓库安装地址：`https://github.com/xiao-yu-6/astrbot_plugin_peer_context_guard`。插件内部标识仍为 `astrbot_plugin_peer_context_guard`，保持既有数据目录兼容。
+英文项目名：**Multi-Bot Chat Optimizer**。仓库安装地址：`https://github.com/xiao-yu-6/astrbot_plugin_multibot_chat_optimizer`。插件内部标识仍为 `astrbot_plugin_peer_context_guard`，保持既有数据目录兼容。
 
 1. 在 AstrBot 管理面板进入 **插件 → 安装/上传插件**，上传本项目 Release 中的 ZIP 包；或按照所用 AstrBot 版本支持的方式安装仓库源码。
 2. 核对插件加载日志，确认所需 Python 依赖已正确安装。
@@ -161,6 +199,7 @@ QQ号|机器人代号|别名1,别名2
 astrbot_plugin_peer_context_guard/
 ├── main.py                  # AstrBot 事件处理与 Web API
 ├── core.py                  # 会话规则、正则和 SQLite 历史
+├── wake_flow.py             # 有界近期群聊、空唤醒及同发言者等待窗口
 ├── settings.py              # 配置验证及兼容转换
 ├── config_storage.py       # 插件私有配置持久化
 ├── metadata.yaml           # AstrBot 插件元信息
@@ -179,10 +218,10 @@ astrbot_plugin_peer_context_guard/
 python -m unittest discover -s astrbot_plugin_peer_context_guard/tests -v
 ```
 
-v0.6.3 随包测试共 **68 项**；这些是离线逻辑及模拟事件测试，并不等于已经验证了真实 QQ、NapCat、AstrBot Dashboard、数据库并发或其他第三方插件的全部兼容性。欢迎反馈实机测试结果，最好使用已经脱敏的日志和最小复现步骤。
+v0.7.0 随包测试共 **93 项**；另在 AstrBot 4.29.1 真实管道中通过25项无网络断言（模型和发送端为测试接收器）；这些是离线逻辑及模拟事件测试，并不等于已经验证了真实 QQ、NapCat、AstrBot Dashboard、数据库并发或其他第三方插件的全部兼容性。欢迎反馈实机测试结果，最好使用已经脱敏的日志和最小复现步骤。
 
 ## 开源许可证与贡献
 
 本项目随附 [MIT License](LICENSE)。修改和分发时请保留许可证及现有版权声明。欢迎提交 Issue 和 Pull Request；涉及 QQ 号、凭证、群聊原文、数据库或账号信息的安全问题，请参见 [SECURITY.md](SECURITY.md)，不要直接公开敏感内容。
 
-维护者：[xiao-yu-6](https://github.com/xiao-yu-6) · [项目仓库](https://github.com/xiao-yu-6/astrbot_plugin_peer_context_guard) · [v0.6.3 安装包](https://github.com/xiao-yu-6/astrbot_plugin_peer_context_guard/releases/download/v0.6.3/astrbot_plugin_peer_context_guard_v0.6.3.zip)
+维护者：[xiao-yu-6](https://github.com/xiao-yu-6) · [项目仓库](https://github.com/xiao-yu-6/astrbot_plugin_multibot_chat_optimizer) · [v0.7.0 安装包](https://github.com/xiao-yu-6/astrbot_plugin_multibot_chat_optimizer/releases/download/v0.7.0/astrbot_plugin_peer_context_guard_v0.7.0.zip)

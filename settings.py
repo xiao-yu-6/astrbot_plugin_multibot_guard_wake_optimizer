@@ -8,6 +8,7 @@ import copy
 import re
 
 from .core import parse_roster, _compiled_regex, timed_regex, REGEX_MATCH_TIMEOUT
+from .wake_flow import FLOW_DEFAULTS
 
 PLATFORM = re.compile(r"[\w.-]{1,80}\Z")
 QQ = re.compile(r"[1-9]\d{4,15}\Z")
@@ -128,6 +129,23 @@ def validate_all(raw: dict) -> dict:
         mode = item.get("wake_mode", "shared")
         if mode not in ("shared", "per_group"):
             raise InvalidSettings("群聊唤醒词模式错误")
+        flow = item.get("wake_flow", {})
+        if not isinstance(flow, dict):
+            raise InvalidSettings("唤醒接话设置格式错误")
+        action = flow.get("empty_action", FLOW_DEFAULTS["empty_action"])
+        if action not in ("original", "respond", "wait"):
+            raise InvalidSettings("空唤醒处理方式错误")
+        clean_flow = {
+            "enabled": _bool(flow.get("enabled", False), "唤醒接话开关"),
+            "empty_action": action,
+            "followup_enabled": _bool(flow.get("followup_enabled", False), "同人接话开关"),
+        }
+        for key, label, minimum, maximum in (
+            ("context_count", "附带群聊条数", 0, 50),
+            ("context_max_chars", "群聊上下文字符数", 512, 12000),
+            ("wait_seconds", "等待秒数", 1, 300),
+        ):
+            clean_flow[key] = _number(flow.get(key), label, minimum, maximum, FLOW_DEFAULTS[key])
         normalized_instances.append({
             "__template_key":"instance",
             "instance_label":_text(item.get("instance_label", ""), "实例备注", 64) or platform,
@@ -137,6 +155,7 @@ def validate_all(raw: dict) -> dict:
             "keyword_enabled":_bool(item.get("keyword_enabled",True),"实例唤醒开关"),
             "wake_mode":mode,
             "wake_regex":_regex(item.get("wake_regex", "")),
+            "wake_flow": clean_flow,
         })
     root["instances"] = normalized_instances
     group_ids = set()

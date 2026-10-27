@@ -5,6 +5,7 @@ let cfg;
 let dirty = false;
 let chatProviders = [];
 let providerListError = '';
+const flowDefaults = {enabled:false,context_count:6,context_max_chars:4000,empty_action:'original',followup_enabled:false,wait_seconds:60};
 const fallback = { robot_setup:{enabled:false,wake_enabled:true,wake_groups:[],instances:[],groups:[],group_sessions:[]},guard_options:{bot_guard_enabled:true,gate_groups:[],inject_enabled:true,recent_count:6,related_count:8,recall_search_limit:5000,max_inject_chars:2400,max_saved_per_group:10000,verbose_log:false},semantic_options:{semantic_enabled:false,semantic_provider_id:'',semantic_timeout_seconds:20} };
 
 const e = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -34,9 +35,23 @@ function renderInstances(){
  return `<article class="card"><h4>${e(inst.instance_label||inst.platform_id||'新机器人')}</h4><span class="pill">${e(inst.platform_id||'待登记实例ID')}</span>
  <div class="formgrid" style="margin-top:13px">${select(base+'.wake_mode','唤醒正则作用模式',[{id:'shared',label:'所有群使用同一条正则'},{id:'per_group',label:'允许群聊单独覆盖'}],'请选择模式')}${field(base+'.wake_regex','默认唤醒正则','例如 (机器人A|小A)')}</div>
  ${toggle(base+'.keyword_enabled','启用这个机器人的正则唤醒')}
- <p class="hint">使用 Python re.search，句中包含即可匹配；默认正则留空=不通过该正则唤醒（原生@和指令不受影响）。</p></article>`;
+ <p class="hint">使用 Python re.search，句中包含即可匹配；默认正则留空=不通过该正则唤醒（原生@和指令不受影响）。</p>${renderFlow(i)}</article>`;
  }).join('');
  return `<div class="block"><h3 class="subtitle">机器人实例的默认唤醒规则</h3><div class="rowcards">${cards||'<div class="empty">先在顶部基础参数表中添加机器人实例。</div>'}</div></div>`;
+}
+function renderFlow(i){
+ const base=`robot_setup.instances.${i}.wake_flow`;
+ return `<div class="block"><h3 class="subtitle">@ / 关键词唤醒：上下文与接话</h3>
+ ${toggle(base+'.enabled','启用此实例的自定义唤醒接话','默认关闭，保留原有行为。启用后只在上方「关键词唤醒群范围」内生效，@ 同样遵守此范围。')}
+ <div class="formgrid">
+ ${field(base+'.context_count','附带最近群聊消息条数（0～50）','0=不额外附带','number','真人群友消息及本实例已发送的文字回复；不改已有长期记忆和会话历史。')}
+ ${field(base+'.context_max_chars','额外上下文字符上限（512～12000）','默认4000','number')}
+ ${select(base+'.empty_action','只 @ 或只发唤醒词时',[{id:'original',label:'保留原设置（不接管空唤醒）'},{id:'respond',label:'立即接话（走正常对话和上下文流程）'},{id:'wait',label:'不立即回复，等待同一人补充消息'}],'请选择处理方式')}
+ ${field(base+'.wait_seconds','自定义等待秒数（1～300）','默认60','number','适用于「等待补充」及下方「回复后接下一条」。保留原设置时，原生空唤醒仍使用框架原有等待规则。')}
+ </div>
+ ${toggle(base+'.followup_enabled','唤醒消息回复后，允许同一人再接一条消息','按实例＋群号＋发言者隔离；从实际回复发送后开始计时，只接一条，不持续续期。指令、@其他机器人和仅叫其他机器人的消息不被接走。')}
+ <p class="hint">上下文仅在内存缓存，最多保留30分钟；启用后开始收集，重载或保存设置会清空缓存和等待窗口。此处的条数只控制额外群聊片段，不限制 AstrBot 原有会话历史、记忆插件或群聊上下文设置。新功能不会关闭语义二次判断；它仍可能拒绝关键词唤醒。</p>
+ </div>`;
 }
 function renderBots(session,i){
  const bots=Array.isArray(session.bots)?session.bots:[];
@@ -100,7 +115,7 @@ async function fetchChatProviders(){
   providerListError='模型列表读取失败，请检查插件日志后刷新。';
  }
 }
-function render(){if(!cfg)return;root.innerHTML=renderBase()+renderWake()+renderGuard()+renderSemantic();}
+function render(){if(!cfg)return;for(const inst of instances())inst.wake_flow={...flowDefaults,...(inst.wake_flow||{})};root.innerHTML=renderBase()+renderWake()+renderGuard()+renderSemantic();}
 
 async function load(){ notice.className=''; notice.textContent='加载中…';
  try{const obj=await bridge.apiGet('config/get');cfg={robot_setup:{...fallback.robot_setup,...(obj.robot_setup||{})},guard_options:{...fallback.guard_options,...(obj.guard_options||{})},semantic_options:{...fallback.semantic_options,...(obj.semantic_options||{})}};
