@@ -17,6 +17,8 @@ python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 node --check views/settings/app.js
 node tests/frontend_lifecycle.cjs
+node tests/frontend_status.cjs
+node tests/frontend_status_review.cjs
 ```
 
 上述测试使用模拟事件与模型接口。它们用于回归检查，不能替代实际适配器环境中的兼容性验证。涉及事件优先级、唤醒或调度的修改，应补充相应的框架集成检查；不要向公共群聊发送自动化测试流量。
@@ -42,4 +44,4 @@ node tests/frontend_lifecycle.cjs
 
 ## 分发方式
 
-通过仓库源码安装和更新；不维护 GitHub Release 或预打包安装文件。
+通过仓库源码安装和更新，不创建 GitHub Release。需要本地 ZIP 时，仅包含经检查的插件源码和必要资源；不包含 Git 元数据、运行配置、数据库、日志或备份，也不将 ZIP 提交到仓库。

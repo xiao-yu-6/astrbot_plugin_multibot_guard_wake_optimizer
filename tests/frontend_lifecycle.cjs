@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),path=require('path'),assert=require('assert/strict');
-const nodes={};for(const id of ['render','notice','save','reload'])nodes[id]={innerHTML:'',textContent:'',className:'',listeners:{},addEventListener(k,f){this.listeners[k]=f;}};
+const nodes={};for(const id of ['render','notice','save','reload','status-panel'])nodes[id]={innerHTML:'',textContent:'',className:'',listeners:{},addEventListener(k,f){this.listeners[k]=f;}};
 let confirmations=0;
 let stored={robot_setup:{enabled:true,wake_enabled:true,wake_groups:['234567890'],instances:[
  {platform_id:'bot-a',instance_label:'机器人A',bot_name:'机器人A',self_qq:'1000000001',keyword_enabled:true,wake_mode:'per_group',wake_regex:'小A'},
@@ -7,7 +7,7 @@ let stored={robot_setup:{enabled:true,wake_enabled:true,wake_groups:['234567890'
 ],groups:[{group_id:'123456789',group_label:'示例群A'},{group_id:'234567890',group_label:'示例群B'}],group_sessions:[
  {platform_id:'bot-a',group_id:'123456789',keyword_enabled:true,use_custom_wake_regex:false,wake_regex:'',block_bot_replies:true,bots:['1000000002|机器人B|小B']}
 ]},guard_options:{gate_groups:['234567890']},semantic_options:{semantic_enabled:false}};
-const bridge={ready:async()=>{},apiGet:async k=>k==='models/list'?{providers:[]}:structuredClone(stored),apiPost:async(k,data)=>{
+const bridge={ready:async()=>{},apiGet:async k=>k==='models/list'?{providers:[]}:k==='status/get'?{enabled:true,instances:2}:structuredClone(stored),apiPost:async(k,data)=>{
  assert.equal(k,'config/save');stored=structuredClone(data);return {saved:true};}};
 const window={AstrBotPluginView:bridge,addEventListener(){},confirm(){confirmations++;return true;},alert(msg){throw Error(msg);}};
 const source=fs.readFileSync(path.join(__dirname,'../views/settings/app.js'),'utf8');

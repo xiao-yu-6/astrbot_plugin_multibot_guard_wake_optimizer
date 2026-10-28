@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 from sys import maxsize
 import uuid
+import time
+from datetime import datetime, timezone
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -31,7 +33,8 @@ from .semantic_judge import (SYSTEM_PROMPT, PARTICIPATION_SYSTEM_PROMPT,
                              build_semantic_request, parse_semantic_reply,
                              parse_participation_reply, semantic_mode, parse_aliases)
 from .patrol import PatrolScheduler
-from .core import _compiled_regex, REGEX_MATCH_TIMEOUT
+from .archive_worker import ArchiveWriter, ArchiveRow
+from .core import _compiled_regex, REGEX_MATCH_TIMEOUT, SessionRuleIndex
 
 PLUGIN_NAME = "astrbot_plugin_peer_context_guard"
 GUARD_PRIORITY = maxsize - 3
@@ -45,6 +48,12 @@ class PeerContextGuard(WakeFlowMixin, Star):
         # Explicit injected dictionaries are supported for offline tests.
         self.cfg = config if config is not None else ManagedConfig(PLUGIN_NAME)
         self.store: PeerStore | None = None
+        self._archive_writer: ArchiveWriter | None = None
+        self._rule_index: SessionRuleIndex | None = None
+        self._created_at = time.monotonic()
+        self._last_saved_at: str | None = (datetime.fromtimestamp(self.cfg.path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+                                        if isinstance(self.cfg, ManagedConfig) and self.cfg.path.is_file() else None)
+        self._blocked_events = 0
         self._queue_binding = None
         self._observed_self_ids: dict[str, str] = {}
         self._wake_flow = WakeFlowState()
@@ -54,6 +63,7 @@ class PeerContextGuard(WakeFlowMixin, Star):
             context.register_web_api(f"/{PLUGIN_NAME}/config/get", self.web_get_config, ["GET"], "Read linked QQ configuration")
             context.register_web_api(f"/{PLUGIN_NAME}/config/save", self.web_save_config, ["POST"], "Save linked QQ configuration")
             context.register_web_api(f"/{PLUGIN_NAME}/models/list", self.web_list_chat_providers, ["GET"], "List configured chat completion providers")
+            context.register_web_api(f"/{PLUGIN_NAME}/status/get", self.web_get_status, ["GET"], "Aggregate safe runtime status")
 
     def _section(self, section: str) -> dict:
         value = self.cfg.get(section, {})
@@ -95,6 +105,8 @@ class PeerContextGuard(WakeFlowMixin, Star):
             }
             self._wake_flow.clear()
             self._patrol.clear()
+            self._refresh_rule_index()
+            self._last_saved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         except Exception as exc:
             logger.exception("[peer-context] failed saving config View")
             return error_response(f"无法保存设置：{type(exc).__name__}", status_code=500)
@@ -132,7 +144,52 @@ class PeerContextGuard(WakeFlowMixin, Star):
             logger.warning("[peer-context] chat provider list unavailable (%s)", type(exc).__name__)
             return error_response("暂时无法读取对话模型提供商列表", status_code=503)
 
+    def _refresh_rule_index(self):
+        """Validated ManagedConfig gets a stable indexed snapshot on save.
+
+        Tests that inject mutable dicts retain the historic immediate behavior.
+        """
+        setup = self._section("robot_setup")
+        legacy = self.cfg.get("session_rules", [])
+        if legacy and not setup.get("_linked_active", False):
+            rows = parse_session_rules(legacy)
+        else:
+            rows = (build_rules_from_setup(setup)
+                    if setup.get("_linked_active", False) or setup.get("instances")
+                    else parse_session_rules(legacy))
+        self._rule_index = SessionRuleIndex(rows)
+
+    async def web_get_status(self):
+        """Aggregates only; do not transmit names, QQ IDs or message bodies."""
+        from astrbot.api.web import json_response
+        setup = self._section("robot_setup")
+        guard = self._section("guard_options")
+        patrol = self._patrol
+        status = {
+            "enabled": bool(setup.get("enabled", False)),
+            "wake_enabled": bool(setup.get("wake_enabled", True)),
+            "guard_enabled": bool(guard.get("bot_guard_enabled", True)),
+            "semantic_mode": self._semantic_mode(),
+            "instances": len(setup.get("instances", [])),
+            "groups": len(setup.get("groups", [])),
+            "sessions": len(setup.get("group_sessions", [])),
+            "roster_entries": sum(len(row.get("bots", [])) for row in setup.get("group_sessions", []) if isinstance(row, dict)),
+            "pending_patrols": len(patrol._windows),
+            "active_patrols": len(patrol._busy),
+            "cooldown_groups": sum(deadline > patrol._clock() for deadline in patrol._cooldown.values()),
+            "queue_hook_active": self._queue_binding is not None and self._queue_binding[3]["active"],
+            "archive": self._archive_writer.stats() if self._archive_writer else {"queued": 0,"capacity": 1024,"accepted":0,"written":0,"failed":0,"dropped":0,"in_flight":False,"running":False},
+            "blocked_bot_events": self._blocked_events,
+            "uptime_seconds": int(time.monotonic()-self._created_at),
+            "last_saved_at": self._last_saved_at,
+        }
+        return json_response(status)
+
     def _rule(self, event) -> dict | None:
+        if isinstance(self.cfg, ManagedConfig):
+            if self._rule_index is None:
+                self._refresh_rule_index()
+            return self._rule_index.get(str(event.get_platform_id()), str(event.get_group_id()))
         setup = self._section("robot_setup")
         old = self.cfg.get("session_rules", [])
         if old and not setup.get("_linked_active", False):
@@ -192,6 +249,9 @@ class PeerContextGuard(WakeFlowMixin, Star):
             return
         path = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME / "peer_messages.sqlite3"
         self.store = PeerStore(path)
+        self._refresh_rule_index()
+        self._archive_writer = ArchiveWriter(self.store)
+        self._archive_writer.start()
         queue = self.context.get_event_queue()
         prev = queue.put_nowait
         had_override = "put_nowait" in vars(queue)
@@ -213,15 +273,25 @@ class PeerContextGuard(WakeFlowMixin, Star):
         if self._queue_binding:
             queue, prev, had_override, state, wrapper = self._queue_binding
             state["active"] = False
+            external_wrapper = queue.put_nowait is not wrapper
             if queue.put_nowait is wrapper:
                 if had_override:
                     queue.put_nowait = prev
                 else:
                     del queue.put_nowait
             self._queue_binding = None
-        if self.store:
-            self.store.close()
-            self.store = None
+            if external_wrapper:
+                logger.warning("[peer-context] queue has another wrapper; disabled this plugin hook without altering it")
+        try:
+            if self._archive_writer:
+                await self._archive_writer.close()
+        finally:
+            self._archive_writer = None
+            if self.store:
+                # A threaded recall may still hold the database lock.
+                await asyncio.to_thread(self.store.close)
+                self.store = None
+            self._rule_index = None
 
     def _process_incoming(self, event) -> bool:
         if not self._value("robot_setup", "enabled", True) or not self._eligible(event):
@@ -234,26 +304,46 @@ class PeerContextGuard(WakeFlowMixin, Star):
             self._observed_self_ids[str(event.get_platform_id())] = own_id
         if not self._guard_applies(event, rule) or not self._is_robot(event, rule):
             return False
+        self._stop(event)
+        self._blocked_events += 1
+        try:
+            self._archive_bot_event(event, rule, own_id)
+        except Exception as exc:
+            logger.warning("[peer-context] archive preparation failed (%s); bot still blocked", type(exc).__name__)
+        if self._value("guard_options", "verbose_log", False):
+            logger.info("[peer-context] dropped bot event sender=%s instance=%s group=%s",
+                        event.get_sender_id(), event.get_platform_id(), event.get_group_id())
+        return True
+
+    def _archive_bot_event(self, event, rule, own_id):
         sender = str(event.get_sender_id() or "")
         # An independent SQLite archive is necessary: the blocked event cannot
         # reach AstrBot's usual group-ICL recorder or LivingMemory handlers.
         if sender != own_id and self._value("guard_options", "inject_enabled", True) and self.store:
-            content = self._plain_content(event).strip()
+            # Match the persisted text limit before retaining queued messages.
+            content = self._plain_content(event).strip()[:1500]
+            if not content:
+                return
             obj = getattr(event, "message_obj", None)
             raw_msgid = getattr(obj, "message_id", None)
             msgid = str(raw_msgid) if raw_msgid not in (None, "") else None
             name = rule["bots"].get(sender, {}).get("name") or str(event.get_sender_name() or sender)
-            try:
-                self.store.append(str(event.get_platform_id()), str(event.get_group_id()),
-                                  sender, name, content, msgid,
-                                  int(self._value("guard_options", "max_saved_per_group", 10000)))
-            except Exception as exc:
-                logger.warning("[peer-context] archive failed (%s); bot still blocked", type(exc).__name__)
-        self._stop(event)
-        if self._value("guard_options", "verbose_log", False):
-            logger.info("[peer-context] dropped bot event sender=%s instance=%s group=%s",
-                        sender, event.get_platform_id(), event.get_group_id())
-        return True
+            row = ArchiveRow(str(event.get_platform_id()), str(event.get_group_id()),
+                             sender, name, content, msgid,
+                             int(self._value("guard_options", "max_saved_per_group", 10000)))
+            if self._archive_writer is not None:
+                # Strictly non-blocking queue entry: DB slowness must not delay AstrBot ingress.
+                if not self._archive_writer.enqueue(row):
+                    lost = self._archive_writer.dropped
+                    if lost == 1 or lost % 100 == 0:
+                        logger.warning("[peer-context] archive buffer unavailable/dropped=%d; bot still blocked", lost)
+            elif self._queue_binding is None:
+                # Offline unit tests may invoke ingress without initialize().
+                try:
+                    self.store.append(row.platform_id, row.group_id, row.sender_id,
+                                      row.name, row.content, row.message_id, row.limit)
+                except Exception as exc:
+                    logger.warning("[peer-context] test-only archive failed (%s)", type(exc).__name__)
 
     @staticmethod
     def _really_at_self(event) -> bool:
@@ -334,7 +424,7 @@ class PeerContextGuard(WakeFlowMixin, Star):
         peers = []
         if semantic_only and self.store and rule.get("bots"):
             try:
-                peers = self.store.recall(str(event.get_platform_id()), str(event.get_group_id()),
+                peers = await asyncio.to_thread(self.store.recall, str(event.get_platform_id()), str(event.get_group_id()),
                                           "", recent_count=min(count, 5),
                                           relevant_count=0, candidate_limit=100,
                                           max_chars=1200, bot_directory=rule["bots"])
@@ -417,8 +507,7 @@ class PeerContextGuard(WakeFlowMixin, Star):
             candidate = original or modified
             if not candidate or not candidate.strip():
                 return
-            # This handler runs AFTER sender-ID gates. Collecting at the early
-            # empty-wake hook would retain messages later rejected by a gate.
+            # Collect only after sender-ID gates have accepted this message.
             msgid = str(getattr(getattr(event, "message_obj", None), "message_id", "") or "")
             sender = str(event.get_sender_name() or "群友")
             self._wake_flow.add(self._flow_key(event)[:2],
@@ -469,9 +558,8 @@ class PeerContextGuard(WakeFlowMixin, Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=maxsize + 1)
     async def prepare_wake_flow(self, event: AstrMessageEvent):
-        # Prevent the builtin's higher-priority single-component empty-prefix
-        # handler from issuing a request before patrol can decide. Do not
-        # collect content or call a model before downstream sender gates.
+        # Native single-component empty-prefix handling may run before patrol.
+        # Only normalize a candidate; wait for sender-ID gates before archiving.
         if (self._semantic_mode() == "semantic_only"
                 and self._value("robot_setup", "enabled", False)
                 and self._value("robot_setup", "wake_enabled", True)
@@ -491,8 +579,6 @@ class PeerContextGuard(WakeFlowMixin, Star):
                             and len(event.get_messages()) == 1
                             and isinstance(event.get_messages()[0], Plain)):
                         event.message_obj.message = [Plain(text=content), Plain(text="")]
-                    # Explicit @ / commands were excluded above. A native
-                    # prefix must not bypass a later negative patrol result.
                     event.is_at_or_wake_command = False
                     event.message_str = content
         await self.prepare_wake_flow_impl(event)
@@ -540,7 +626,7 @@ class PeerContextGuard(WakeFlowMixin, Star):
         roster = [{"name": item["name"], "aliases": item["aliases"]}
                   for item in format_directory(rule["bots"], str(event.get_self_id()))]
         try:
-            messages = self.store.recall(
+            messages = await asyncio.to_thread(self.store.recall,
                 str(event.get_platform_id()), str(event.get_group_id()),
                 str(event.message_str or ""),
                 recent_count=int(self._value("guard_options", "recent_count", 6)),

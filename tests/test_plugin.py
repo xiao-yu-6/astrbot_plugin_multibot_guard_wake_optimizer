@@ -282,6 +282,7 @@ class MainTest(unittest.IsolatedAsyncioTestCase):
             self.ctx.q.put_nowait(bot)
             self.assertEqual(len(self.ctx.q.events), 1)
             self.assertTrue(bot.stopped)
+            await self.plugin._archive_writer.queue.join()
             self.assertEqual(self.plugin.store.count('bot-a','123456789'), 1)
             await self.plugin.terminate()
             self.assertNotIn('put_nowait', vars(self.ctx.q))

@@ -13,6 +13,7 @@ from typing import Any
 import re
 import os
 import sqlite3
+import threading
 
 # Third-party regex engine supports per-match timeouts, unlike Python re.
 import regex as timed_regex
@@ -78,7 +79,7 @@ def parse_session_rules(raw: Any) -> list[dict]:
         return []
     rules: list[dict] = []
     keys: set[tuple[str, str]] = set()
-    for row in raw[:200]:
+    for row in raw:
         if not isinstance(row, dict):
             continue
         platform = str(row.get("platform_id") or "").strip()
@@ -170,6 +171,15 @@ def tokenize(s: str) -> set[str]:
     return words
 
 
+def _db_guard(method):
+    from functools import wraps
+    @wraps(method)
+    def protected(self, *args, **kwargs):
+        with self._db_lock:
+            return method(self, *args, **kwargs)
+    return protected
+
+
 class PeerStore:
     """Local SQLite log; keyed by instance+group; no remote or cross-group sync."""
     def __init__(self, db_path: str | Path):
@@ -177,7 +187,8 @@ class PeerStore:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if os.name == "posix":
             os.chmod(path.parent, 0o700)
-        self.db = sqlite3.connect(str(path), isolation_level=None, timeout=2)
+        self._db_lock = threading.RLock()
+        self.db = sqlite3.connect(str(path), isolation_level=None, timeout=2, check_same_thread=False)
         if os.name == "posix":
             os.chmod(path, 0o600)
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -198,6 +209,7 @@ class PeerStore:
           ON peer_message(platform_id,group_id,sender_id,msg_id)
           WHERE msg_id IS NOT NULL''')
 
+    @_db_guard
     def append(self, platform_id: str, group_id: str, sender_id: str,
                sender_name: str, content: str, msg_id: str | None = None,
                max_per_scope: int = 10000) -> bool:
@@ -216,6 +228,7 @@ class PeerStore:
             )''', (platform_id, group_id, limit))
         return bool(cur.rowcount)
 
+    @_db_guard
     def recall(self, platform_id: str, group_id: str, query: str,
                recent_count: int = 6, relevant_count: int = 8,
                candidate_limit: int = 5000, max_chars: int = 2400,
@@ -264,10 +277,12 @@ class PeerStore:
             used += cost
         return output
 
+    @_db_guard
     def count(self, platform_id: str, group_id: str) -> int:
         return self.db.execute('''SELECT COUNT(*) FROM peer_message
           WHERE platform_id=? AND group_id=?''', (platform_id, group_id)).fetchone()[0]
 
+    @_db_guard
     def close(self):
         self.db.close()
 
@@ -286,7 +301,7 @@ def build_rules_from_setup(setup: dict | None) -> list[dict]:
         return []
     ids = {}
     raw = []
-    for instance in instances[:100]:
+    for instance in instances:
         if not isinstance(instance, dict):
             continue
         platform = str(instance.get("platform_id", "")).strip()
@@ -302,7 +317,7 @@ def build_rules_from_setup(setup: dict | None) -> list[dict]:
             "bots": [],
         })
     seen = set()
-    for group in groups[:500]:
+    for group in groups:
         if not isinstance(group, dict):
             continue
         platform = str(group.get("platform_id", "")).strip()
@@ -338,3 +353,28 @@ def explicit_local_bot_ids(setup: dict | None) -> set[str]:
             if _QQ_ID.fullmatch(value):
                 result.add(value)
     return result
+
+
+class SessionRuleIndex:
+    """O(1) per-message session lookup, built only on startup/config save.
+
+    Exact group entries supersede the instance wildcard; group bot roster is
+    preserved exactly as in session_config(). There is no list slicing.
+    """
+    def __init__(self, rules: list[dict]):
+        self.rules = {}
+        for row in rules:
+            self.rules[(row["platform_id"], row["group_id"])] = row
+
+    def get(self, platform_id: str, group_id: str) -> dict | None:
+        default = self.rules.get((platform_id, "*"))
+        exact = self.rules.get((platform_id, group_id))
+        if exact is None and default is None:
+            return None
+        if exact is None:
+            return default
+        if default is None:
+            return exact
+        roster = dict(default["bots"])
+        roster.update(exact["bots"])
+        return {**exact, "bots": roster}

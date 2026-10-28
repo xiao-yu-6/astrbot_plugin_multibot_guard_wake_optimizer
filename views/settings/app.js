@@ -5,6 +5,9 @@ let cfg;
 let dirty = false;
 let chatProviders = [];
 let providerListError = '';
+let runtimeStatus = null;
+let runtimeStatusError = "";
+let runtimeStatusLoading = false;
 let rememberedSemanticMode = 'regex_then_semantic';
 const flowDefaults = {enabled:false,context_count:6,context_max_chars:4000,empty_action:'original',followup_enabled:false,wait_seconds:60};
 const fallback = { robot_setup:{enabled:false,wake_enabled:true,wake_groups:[],instances:[],groups:[],group_sessions:[]},guard_options:{bot_guard_enabled:true,gate_groups:[],inject_enabled:true,recent_count:6,related_count:8,recall_search_limit:5000,max_inject_chars:2400,max_saved_per_group:10000,verbose_log:false},semantic_options:{semantic_enabled:false,semantic_mode:'regex_only',judge_persona:'',semantic_provider_id:'',semantic_timeout_seconds:20,semantic_context_count:4,patrol_interval_seconds:15,patrol_cooldown_seconds:45,patrol_min_messages:1} };
@@ -22,6 +25,34 @@ const sessions=()=>cfg.robot_setup.group_sessions||[];
 const instanceOptions=()=>instances().filter(x=>x.platform_id).map(x=>({id:x.platform_id,label:`${x.instance_label||x.platform_id} · ${x.platform_id}`}));
 const groupOptions=()=>groups().filter(x=>x.group_id).map(x=>({id:x.group_id,label:`${x.group_label||x.group_id} · ${x.group_id}`}));
 const scope=(path,title)=>`<div class="block"><h3 class="subtitle">${e(title)}</h3><p class="hint">不勾选任何群 = 所有群（包含未登记的群）。若取消最后一个勾选项，范围会扩大到所有群，需要二次确认。</p><div class="scope-items">${groupOptions().length?groupOptions().map(g=>`<label><input type="checkbox" data-scope="${e(path)}" data-id="${e(g.id)}" ${(v(path)||[]).includes(g.id)?'checked':''}> ${e(g.label)}</label>`).join(''):'<span class="muted">请先在基础表登记QQ群</span>'}</div></div>`;
+
+function overviewHtml(){
+ const s=runtimeStatus;
+ const cell=(label,value,sub='')=>`<div class="status-card"><span class="status-label">${e(label)}</span><strong>${e(value)}</strong>${sub?`<small>${e(sub)}</small>`:''}</div>`;
+ const semanticMode={regex_only:'仅正则',regex_then_semantic:'正则＋语义复核',semantic_only:'独立语义巡检'};
+ const enabledFeatures=s?.enabled?[s.guard_enabled?'防互聊':'',s.wake_enabled?'关键词唤醒':''].filter(Boolean):[];
+ const semanticActive=s?.enabled&&s.wake_enabled&&['regex_then_semantic','semantic_only'].includes(s.semantic_mode);
+ const live=s?[
+  cell('插件运行',s.enabled?'已启用':'内部关闭',s.enabled&&s.queue_hook_active?'事件队列守护已加载':''),
+  cell('实例 / 群 / 会话',`${s.instances} / ${s.groups} / ${s.sessions}`,`通讯录记录 ${s.roster_entries} 条`),
+  enabledFeatures.length?cell('已启用功能',enabledFeatures.join(' · ')):'',
+  semanticActive?cell('语义模式',semanticMode[s.semantic_mode]):'',
+  semanticActive&&s.semantic_mode==='semantic_only'?cell('巡检状态',`${s.pending_patrols} 等待 · ${s.active_patrols} 执行`,`冷却中 ${s.cooldown_groups} 个会话`):''
+ ].join(''):'<div class="status-unavailable">'+e(runtimeStatusError||'正在读取实时运行状态…')+'</div>';
+ return `<section class="section status-overview" aria-label="运行状态总览"><div class="sec-head"><div><h2 class="sec-title">运行状态总览</h2><p class="sec-desc">展示后端已保存并正在生效的汇总状态；下方未保存的草稿不会计入。不会显示QQ号、群号或聊天文本。</p></div><button type="button" class="soft small" data-action="refresh-status">↻ 刷新状态</button></div><div class="status-grid">${live}</div></section>`;
+}
+async function fetchRuntimeStatus(){
+ if(runtimeStatusLoading)return;
+ runtimeStatusLoading=true;
+ try{
+  const value=await bridge.apiGet('status/get');
+  if(!value || typeof value.instances!=='number'||typeof value.enabled!=='boolean')throw Error('返回内容不支持运行总览');
+  runtimeStatus=value;runtimeStatusError='';
+ }catch(err){runtimeStatus=null;runtimeStatusError='实时状态暂不可用，请检查插件版本与后端日志';}
+ finally{runtimeStatusLoading=false;}
+ const panel=typeof document.getElementById==='function'?document.getElementById('status-panel'):null;
+ if(panel)panel.innerHTML=overviewHtml();
+}
 
 function renderBase(){
  let items=instances().map((entry,i)=>`<tr><td>${field(`robot_setup.instances.${i}.instance_label`,'','机器人A')}</td><td>${field(`robot_setup.instances.${i}.platform_id`,'','bot-a')}</td><td>${field(`robot_setup.instances.${i}.self_qq`,'','可留空')}</td><td>${field(`robot_setup.instances.${i}.bot_name`,'','机器人A')}</td><td><button class="danger small" data-action="rm-instance" data-i="${i}">删除</button></td></tr>`).join('');
@@ -168,7 +199,7 @@ async function fetchChatProviders(){
   providerListError='模型列表读取失败，请检查插件日志后刷新。';
  }
 }
-function render(){if(!cfg)return;for(const inst of instances())inst.wake_flow={...flowDefaults,...(inst.wake_flow||{})};root.innerHTML=renderBase()+renderGuard()+renderWake()+renderSemantic();}
+function render(){if(!cfg)return;for(const inst of instances())inst.wake_flow={...flowDefaults,...(inst.wake_flow||{})};root.innerHTML=`<div id="status-panel">${overviewHtml()}</div>`+renderBase()+renderGuard()+renderWake()+renderSemantic();}
 
 async function load(){ notice.className=''; notice.textContent='加载中…';
  try{const obj=await bridge.apiGet('config/get');cfg={robot_setup:{...fallback.robot_setup,...(obj.robot_setup||{})},guard_options:{...fallback.guard_options,...(obj.guard_options||{})},semantic_options:{...fallback.semantic_options,...(obj.semantic_options||{})}};
@@ -177,11 +208,12 @@ async function load(){ notice.className=''; notice.textContent='加载中…';
    cfg.semantic_options.semantic_mode = obj.semantic_options?.semantic_enabled === true ? 'regex_then_semantic' : 'regex_only';
  }
  if(cfg.semantic_options.semantic_mode==='semantic_only'||cfg.semantic_options.semantic_mode==='regex_then_semantic')rememberedSemanticMode=cfg.semantic_options.semantic_mode;
- await fetchChatProviders();dirty=false;notice.textContent='配置已读取'; render();}
+ await fetchChatProviders();dirty=false;notice.textContent='配置已读取'; render();await fetchRuntimeStatus();}
  catch(err){notice.className='error';notice.textContent='读取失败：'+(err?.message||String(err));root.innerHTML='<div class="empty">请在插件详情页重新打开配置中心，或检查插件后端是否成功加载。</div>'}}
 
 function trigger(action,button){const i=Number(button.dataset.i),j=Number(button.dataset.j), s=cfg.robot_setup;
  switch(action){
+ case 'refresh-status':fetchRuntimeStatus();return;
  case 'refresh-providers':fetchChatProviders().then(()=>{render();notice.textContent=dirty?'模型列表已刷新；仍有未保存修改':'模型列表已刷新';});return;
  case 'add-instance':s.instances.push({__template_key:'instance',instance_label:'新机器人',platform_id:'',bot_name:'',self_qq:'',keyword_enabled:true,wake_mode:'shared',wake_regex:''});break;
  case 'rm-instance':{const row=s.instances[i];const linked=s.group_sessions.filter(x=>x.platform_id===row.platform_id).length;
@@ -278,4 +310,9 @@ document.getElementById('save').addEventListener('click',async()=>{
 });
 document.getElementById('reload').addEventListener('click',()=>{if(!dirty||window.confirm('存在未保存的修改，确定放弃这些修改并重新读取吗？'))load()});
 window.addEventListener('beforeunload',ev=>{if(dirty){ev.preventDefault();ev.returnValue='';}});
-try{await bridge.ready();await load();}catch(err){notice.className='error';notice.textContent=String(err)}
+try{await bridge.ready();await load();
+  if(typeof setInterval==='function'){
+    const timer=setInterval(()=>{if(cfg)void fetchRuntimeStatus();},15000);
+    window.addEventListener('beforeunload',()=>clearInterval(timer),{once:true});
+  }
+}catch(err){notice.className='error';notice.textContent=String(err)}
