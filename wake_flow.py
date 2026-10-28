@@ -11,6 +11,7 @@ import json
 import time
 
 from .core import _compiled_regex, REGEX_MATCH_TIMEOUT, has_keyword
+from .semantic_judge import semantic_mode, parse_aliases
 
 
 FLOW_DEFAULTS = {
@@ -130,6 +131,7 @@ def bare_wake_text(original, rule, prefixes):
     if not clean:
         return False
     tokens = {str(rule.get("bot_name", ""))}
+    tokens.update(str(x) for x in rule.get("semantic_aliases_list", []) if str(x))
     tokens.update(str(p).strip() for p in prefixes if str(p).strip() and not str(p).startswith(("/", "／")))
     expression = rule.get("wake_regex", "")
     if expression:
@@ -194,6 +196,11 @@ class WakeFlowMixin:
         rule = self._rule(event)
         if not rule or self._is_robot(event, rule) or not str(event.get_sender_id() or "").isdigit():
             return
+        # In patrol mode, do not run a per-message classifier here. Native
+        # @self retains AstrBot's ordinary wake path; optional continuation
+        # must not bypass patrol for all other human messages.
+        if self._semantic_mode() == "semantic_only" and not self._really_at_self(event):
+            return
         options = self._flow_options(event)
         original = self._plain_content(event).strip()
         key = self._flow_key(event)
@@ -201,11 +208,29 @@ class WakeFlowMixin:
             self._wake_flow.cancel(key)
             return
         own_at = self._really_at_self(event)
+        mode = self._semantic_mode()
         keyword = (self._value("robot_setup", "wake_enabled", True)
+                   and rule.get("keyword_enabled", True)
+                   and mode != "semantic_only"
                    and has_keyword(rule, original or str(event.message_str or "")))
         if self._at_other(event) and not own_at:
             return
-        explicit = bool(own_at or keyword)
+        # The existing custom empty/continuation flow must not secretly bypass
+        # semantic-only classification. Run the classifier at most once here.
+        judged_direct = False
+        if not own_at and (keyword or (mode == "semantic_only" and original
+                                      and self._value("robot_setup", "wake_enabled", True))):
+            await self.wake_by_regex(event)
+            event.set_extra("_peer_flow_keyword_checked", True)
+            if event.is_stopped():
+                return
+            judged_direct = bool(event.is_at_or_wake_command)
+            if keyword and not judged_direct:
+                return  # Reject regex hits without rescuing them via follow-up.
+            if mode == "semantic_only" and not judged_direct:
+                # Existing follow-up/waiting flow must not bypass AI decision.
+                return
+        explicit = bool(own_at or judged_direct)
         if not explicit:
             if self._flow_calls_other(event, original):
                 return
@@ -215,13 +240,6 @@ class WakeFlowMixin:
                 return
             event.is_at_or_wake_command = True
             event.is_wake = True
-        elif keyword and not own_at:
-            # Apply exactly the existing semantic gate ONCE, before the builtin
-            # empty-wake handler. A rejected keyword is never rescued here.
-            await self.wake_by_regex(event)
-            event.set_extra("_peer_flow_keyword_checked", True)
-            if event.is_stopped() or not event.is_at_or_wake_command:
-                return
 
         snapshot = self._wake_flow.snapshot(key[:2], options["context_count"])
         event.set_extra("_peer_wake_context", snapshot)
@@ -230,6 +248,8 @@ class WakeFlowMixin:
         prefixes = config.get("wake_prefix", [])
         if not isinstance(prefixes, (list, tuple)):
             prefixes = []
+        if mode == "semantic_only":
+            rule = {**rule, "semantic_aliases_list": self._semantic_aliases(event, rule)}
         empty = explicit and only_text_at and (
             (own_at and not original) or (not own_at and bare_wake_text(original, rule, prefixes)))
         if empty and options["empty_action"] == "original":
@@ -247,7 +267,7 @@ class WakeFlowMixin:
             text = original or "@" + str(rule["bot_name"])
             event.message_str = text
             event.message_obj.message = [At(qq=event.get_self_id()), Plain(text=text)]
-        elif keyword and original:
+        elif judged_direct and original:
             event.message_str = original  # undo the framework's prefix trimming
         event.is_at_or_wake_command = True
         event.is_wake = True
@@ -256,10 +276,21 @@ class WakeFlowMixin:
             event.set_extra("_peer_flow_arm", (self._wake_flow.epoch, token, options["wait_seconds"]))
 
     async def record_wake_context_impl(self, event):
-        if not self._flow_allowed(event) or event.is_stopped() or event.get_extra("_peer_flow_empty"):
+        # The semantic classifier may need a few preceding messages even when
+        # custom follow-up/empty-mention flow is switched off. Its bounded
+        # context buffer is kept solely in memory and scoped per instance/group.
+        semantic_observe = bool(self._value("robot_setup", "enabled", False)
+                                and self._semantic_mode() != "regex_only"
+                                and self._value("semantic_options", "semantic_context_count", 4) > 0
+                                and self._eligible(event)
+                                and self._in_scope(self._value("robot_setup", "wake_groups", []),
+                                                   str(event.get_group_id())))
+        if (not self._flow_allowed(event) and not semantic_observe) or event.is_stopped() or event.get_extra("_peer_flow_empty"):
             return
         rule = self._rule(event)
-        if not rule or self._is_robot(event, rule) or not self._flow_options(event)["context_count"]:
+        if not rule or self._is_robot(event, rule):
+            return
+        if not semantic_observe and not self._flow_options(event)["context_count"]:
             return
         original = self._plain_content(event)
         if self._flow_command(event, original):
@@ -288,7 +319,8 @@ class WakeFlowMixin:
             self._wake_flow.arm(self._flow_key(event), arm[2], arm[1])
 
     async def inject_wake_context_impl(self, event, req):
-        if not self._flow_allowed(event) or event.is_stopped():
+        patrol_context = event.get_extra("_peer_patrol_context", None)
+        if (not self._flow_allowed(event) and patrol_context is None) or event.is_stopped():
             return
         rule = self._rule(event)
         if not rule or self._is_robot(event, rule):
@@ -296,6 +328,8 @@ class WakeFlowMixin:
         from astrbot.core.agent.message import TextPart
         if any(isinstance(p, TextPart) and p.text.startswith(CONTEXT_PREFIX) for p in req.extra_user_content_parts):
             return
-        text = render_context(event.get_extra("_peer_wake_context", []), self._flow_options(event)["context_max_chars"])
+        text = render_context(
+            patrol_context if patrol_context is not None else event.get_extra("_peer_wake_context", []),
+            self._flow_options(event)["context_max_chars"])
         if text:
             req.extra_user_content_parts.append(TextPart(text=text).mark_as_temp())

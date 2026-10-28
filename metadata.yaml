@@ -1,18 +1,18 @@
 name: astrbot_plugin_peer_context_guard
-display_name: 群聊多机器人聊天优化
+display_name: 多机器人群聊防互聊及唤醒优化
 short_desc: 多机器人独立唤醒、防互聊、只读历史、上下文与限时接话。
 desc: >-
   适用于 AstrBot >=4.29.1,<5 的 QQ 群多机器人协作插件（NapCat / OneBot v11）。
-  功能：①按机器人实例和群聊管理通讯录、独立正则唤醒及开关；
-  ②按真实 QQ 号识别机器人，防止互相触发和循环回复；
+  功能：①按机器人实例和群聊建立通讯录，精确按 QQ 号识别其他机器人并防互聊；
+  ②设置实例统一正则、群聊单独覆盖、上下文接话与只读历史缓存；
   ③可记录被拦截机器人的公开发言，真人唤醒时注入只读历史；
-  ④可选语义判断，区分真正呼叫和仅仅提及；
+  ④可选正则命中后语义复核或独立语义巡检参与分析，参考角色专长与群聊决定是否加入真人讨论；
   ⑤@ / 关键词唤醒可附带最近0～50条群聊背景，保留原有会话、人格和长期记忆；
   ⑥空唤醒可保留原设置、立即接话或等待同一人补充，等待1～300秒，可选回复后再接一条；
   ⑦独立可视化配置中心，可设置群范围、历史条数及字符预算。
   保留原生@、指令与发送者门禁；不启用概率主动回复。首次安装内部功能总开关关闭，自定义接话默认关闭。
   配置入口：插件详情 → 配置中心（settings），无重复原生配置表单。
-version: 0.7.0
+version: 0.7.7
 author: xiao-yu-6
 astrbot_version: ">=4.29.1,<5"
 support_platforms:
@@ -23,5 +23,5 @@ tags:
   - group
   - regex
   - peer-bot
-repo: https://github.com/xiao-yu-6/astrbot_plugin_multibot_chat_optimizer
+repo: https://github.com/xiao-yu-6/astrbot_plugin_multibot_guard_wake_optimizer
 social_link: https://github.com/xiao-yu-6

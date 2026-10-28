@@ -50,6 +50,7 @@ class ModelPrivacyTest(unittest.IsolatedAsyncioTestCase):
     async def test_semantic_prompt_does_not_include_directory_numeric_ids(self):
         config=validate_all(example())
         config['semantic_options']['semantic_enabled']=True
+        config['semantic_options']['semantic_mode']='regex_then_semantic'
         ctx=Context()
         captured=[]
         class CapturingProvider:

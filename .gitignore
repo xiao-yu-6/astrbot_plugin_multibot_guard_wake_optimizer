@@ -13,3 +13,11 @@ settings.json
 *.bak
 *.tmp
 data/
+
+# Source-only publishing; do not commit distributable archives or local output.
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+dist/

@@ -4,3 +4,21 @@ html[data-theme=dark]{--bg:#111820;--panel:#1c2836;--ink:#f1f5f9;--muted:#98aabd
 @media(max-width:800px){.app{padding:14px}.topbar{align-items:flex-start;flex-direction:column}.savebox{justify-content:flex-start}.section{padding:16px}.formgrid,.formgrid.three,.split{grid-template-columns:1fr}.field.span2,.field.span3{grid-column:auto}.rowcards{grid-template-columns:1fr}.botrows{grid-template-columns:1fr 1fr}.botrows input:nth-child(3){grid-column:span 2}}
 
 .provider-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:5px}.provider-toolbar button{width:auto}.provider-toolbar .tiny{flex:1}
+
+/* Keep full-length QQ identifiers readable in the registry editor. */
+.guard-session-cards{grid-template-columns:1fr}
+.guard-session-cards .botrows{grid-template-columns:minmax(155px,1.1fr) minmax(140px,1fr) minmax(185px,1.3fr) auto}
+@media(max-width:800px){.guard-session-cards .botrows{grid-template-columns:1fr 1fr}.guard-session-cards .botrows input:nth-child(3){grid-column:span 2}}
+
+/* v0.7.5: Separate instance-level group wake overrides from bot directories. */
+.wake-instance-cards{grid-template-columns:1fr}
+.wake-instance-card > .field{margin-top:12px;max-width:620px}
+.wake-group-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}
+.wake-group-card{border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--bg)}
+.wake-group-card .inlinecheck{padding:6px 0}
+.wake-group-card input[readonly]{color:var(--muted);background:var(--chip)}
+.wake-add{margin-top:18px}
+.wake-add h3{font-size:13px}
+@media(max-width:800px){.wake-group-list{grid-template-columns:1fr}}
+
+.wake-row-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}.wake-row-heading strong{font-size:13px;overflow-wrap:anywhere}

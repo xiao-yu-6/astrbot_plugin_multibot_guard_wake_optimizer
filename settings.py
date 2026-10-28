@@ -9,6 +9,7 @@ import re
 
 from .core import parse_roster, _compiled_regex, timed_regex, REGEX_MATCH_TIMEOUT
 from .wake_flow import FLOW_DEFAULTS
+from .semantic_judge import semantic_mode
 
 PLATFORM = re.compile(r"[\w.-]{1,80}\Z")
 QQ = re.compile(r"[1-9]\d{4,15}\Z")
@@ -28,6 +29,13 @@ def _bool(value, label):
     if not isinstance(value, bool):
         raise InvalidSettings(f"{label} 只能为开启或关闭")
     return value
+
+
+def _multiline_text(value, label, max_len):
+    if (not isinstance(value, str) or len(value) > max_len
+            or any(ord(c) < 32 and c not in "\r\n\t" for c in value)):
+        raise InvalidSettings(f"{label} 格式错误或过长")
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def _number(value, label, minimum, maximum, default):
@@ -155,6 +163,8 @@ def validate_all(raw: dict) -> dict:
             "keyword_enabled":_bool(item.get("keyword_enabled",True),"实例唤醒开关"),
             "wake_mode":mode,
             "wake_regex":_regex(item.get("wake_regex", "")),
+            "semantic_aliases":_text(item.get("semantic_aliases", ""), "目标机器人语义别名", 240),
+            "semantic_persona":_multiline_text(item.get("semantic_persona", ""), "机器人参与判断人格", 1200),
             "wake_flow": clean_flow,
         })
     root["instances"] = normalized_instances
@@ -234,9 +244,21 @@ def validate_all(raw: dict) -> dict:
         g[k]=_number(guard.get(k,default),k,mn,mx,default)
 
     s=result["semantic_options"]
-    s["semantic_enabled"]=_bool(semantic.get("semantic_enabled",False),"语义开关")
+    if "semantic_mode" in semantic:
+        mode = semantic.get("semantic_mode")
+        if mode not in ("regex_only", "regex_then_semantic", "semantic_only"):
+            raise InvalidSettings("语义判断模式必须是仅正则、正则后复核或仅语义")
+    else:
+        mode = semantic_mode(semantic)
+    s["semantic_mode"] = mode
+    s["semantic_enabled"] = mode != "regex_only"  # compatible persisted flag
+    s["judge_persona"] = _multiline_text(semantic.get("judge_persona", ""), "判断器人格", 2400)
     s["semantic_provider_id"]=_text(semantic.get("semantic_provider_id", ""),"提供商ID",120)
     s["semantic_timeout_seconds"]=_number(semantic.get("semantic_timeout_seconds",20),"语义超时",3,120,20)
+    s["semantic_context_count"]=_number(semantic.get("semantic_context_count",4),"语义判断参考消息条数",0,8,4)
+    s["patrol_interval_seconds"]=_number(semantic.get("patrol_interval_seconds",15),"巡检窗口秒数",2,120,15)
+    s["patrol_cooldown_seconds"]=_number(semantic.get("patrol_cooldown_seconds",45),"巡检冷却秒数",0,3600,45)
+    s["patrol_min_messages"]=_number(semantic.get("patrol_min_messages",1),"巡检窗口最少真人消息",1,20,1)
     return result
 
 

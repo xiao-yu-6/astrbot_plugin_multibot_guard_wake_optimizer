@@ -1,8 +1,8 @@
 {
   "views": {
     "settings": {
-      "title": "Multi-Bot Chat Optimizer Settings",
-      "description": "Linked bot/group selector, peer directory, regex wake, reply protection and semantic judgement"
+      "title": "Multi-Bot Group Guard & Wake Optimizer Settings",
+      "description": "Per-group bot directory, sender-ID guard, regex wake, scoped context and follow-up, optional semantic review and patrol"
     }
   }
 }

@@ -187,6 +187,7 @@ class FlowTest(unittest.IsolatedAsyncioTestCase):
     async def test_semantic_rejection_cannot_be_bypassed(self):
         from test_plugin import Provider
         self.config['semantic_options']['semantic_enabled']=True
+        self.config['semantic_options']['semantic_mode']='regex_then_semantic'
         self.ctx.provider=Provider('NO')
         e=self.event('小A');e.is_at_or_wake_command=True
         await self.plugin.prepare_wake_flow(e)
